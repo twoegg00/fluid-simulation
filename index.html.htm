@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>真實流體力學模擬 (簡潔驗證版)</title>
+<style>
+  :root{ --bg: #000; --panel: rgba(15, 15, 15, 0.95); --accent: #1e88e5; --text: #fff; --text-sub: #bbb; --ok: #00e676; --warn: #ffea00; --err: #ff1744; }
+  html,body{ height:100%; margin:0; display:flex; align-items:center; justify-content:center; background: var(--bg); font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; color:var(--text); overflow: hidden; }
+  .stage{ width:100vw; height:100vh; position:relative; background:#050505; cursor: crosshair; }
+  canvas{ display:block; width:100%; height:100%; }
+  
+  /* UI 樣式 */
+  .top-bar { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(30,30,30,0.8); padding: 5px; border-radius: 50px; display: flex; gap: 5px; border: 1px solid #333; z-index: 10; }
+  .mode-btn { padding: 8px 20px; border-radius: 40px; border: none; background: transparent; color: #888; cursor: pointer; font-weight: bold; transition: 0.3s; }
+  .mode-btn.active { background: var(--accent); color: white; box-shadow: 0 0 15px rgba(30, 136, 229, 0.4); }
+
+  .ui-panel { position: absolute; left: 20px; top: 80px; width: 340px; background: var(--panel); padding: 20px; border-radius: 8px; border: 1px solid #222; box-shadow: 0 10px 40px rgba(0,0,0,0.8); display: none; max-height: 70vh; overflow-y: auto; z-index: 10; }
+  .ui-panel.show { display: block; animation: fadeIn 0.3s; }
+
+  /* 物理驗證儀表板 */
+  .stats-panel { position: absolute; left: 20px; bottom: 20px; width: 280px; background: rgba(0,0,0,0.85); padding: 15px; border-radius: 8px; border: 1px solid #333; pointer-events: none; z-index: 10; font-family: "Segoe UI", monospace; }
+  .stat-title { margin: 0 0 10px 0; font-size: 15px; color: var(--accent); border-bottom: 1px solid #444; padding-bottom: 5px; display: flex; align-items: center; gap:8px; }
+  .stat-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
+  .stat-val { font-weight: bold; font-size: 16px; }
+  .stat-label { color: #ccc; }
+  .stat-bar-bg { width: 100%; height: 4px; background: #333; border-radius: 2px; margin-top: 2px; overflow: hidden; }
+  .stat-bar-fill { height: 100%; background: #555; transition: width 0.1s; }
+  
+  .ok { color: var(--ok); } .bar-ok { background: var(--ok); }
+  .warn { color: var(--warn); } .bar-warn { background: var(--warn); }
+  .err { color: var(--err); } .bar-err { background: var(--err); }
+
+  /* 自適應步長標籤 */
+  .substep-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #333; color: #aaa; margin-left: 5px; }
+  .substep-active { background: var(--accent); color: #fff; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%{opacity:1;} 50%{opacity:0.7;} 100%{opacity:1;} }
+
+  @keyframes fadeIn { from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);} }
+  h3 { margin: 0 0 20px 0; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  h3::before { content:''; display:block; width:4px; height:18px; background:var(--accent); border-radius:2px; }
+  .control-row { margin-bottom: 18px; display: flex; flex-direction: column; gap: 6px; }
+  .label-row { display: flex; justify-content: space-between; font-size: 14px; color: var(--text-sub); }
+  .val-display { font-family: monospace; color: #ffb74d; font-weight: bold; }
+  input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; cursor: pointer; }
+  input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; background: #333; border-radius: 3px; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 18px; width: 18px; border-radius: 50%; background: var(--accent); margin-top: -6px; box-shadow: 0 0 5px rgba(0,0,0,0.5); }
+  .action-btn { width: 100%; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; transition: 0.2s; }
+  .action-btn:hover { background: #1565c0; }
+  .hint { margin-top: 15px; font-size: 12px; color: #666; line-height: 1.4; border-top: 1px solid #333; padding-top: 10px;}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <canvas id="c"></canvas>
+  
+  <div class="top-bar">
+    <button class="mode-btn active" onclick="switchMode('tunnel')">✈️ 風洞實驗</button>
+    <button class="mode-btn" onclick="switchMode('interact')">🌊 互動流體</button>
+  </div>
+
+  <div class="stats-panel">
+    <h4 class="stat-title">🛡️ 物理模型驗證
+       <span id="badge_substep" class="substep-badge">1x Step</span>
+    </h4>
+    
+    <div class="stat-group">
+      <div class="stat-row">
+        <span class="stat-label">CFL 數值 (穩定性)</span>
+        <span class="stat-val ok" id="val_cfl">0.5</span>
+      </div>
+      <div class="stat-bar-bg"><div class="stat-bar-fill bar-ok" id="bar_cfl" style="width: 25%"></div></div>
+      <div style="font-size:11px; color:#666; margin-bottom:10px;">目標: < 2.0 (若超標，系統將自動切割步長)</div>
+    </div>
+  </div>
+
+  <div id="ui-tunnel" class="ui-panel show">
+    <h3>風洞參數</h3>
+    <div class="control-row">
+      <div class="label-row"><span>進氣風速</span><span class="val-display" id="t_val_speed">10.0 m/s</span></div>
+      <input id="t_speed" type="range" min="0" max="15" step="0.5" value="10.0">
+    </div>
+    <div class="control-row">
+      <div class="label-row"><span>機翼攻角</span><span class="val-display" id="t_val_angle">0°</span></div>
+      <input id="t_angle" type="range" min="-45" max="45" step="1" value="0">
+    </div>
+  </div>
+
+  <div id="ui-interact" class="ui-panel">
+    <h3>流體物理參數</h3>
+    <div class="control-row">
+      <div class="label-row"><span>示蹤粒子數</span><span class="val-display" id="i_val_count">2000</span></div>
+      <input id="i_count" type="range" min="500" max="5000" step="100" value="2000">
+    </div>
+    <div class="control-row">
+      <div class="label-row"><span>流體黏滯係數</span><span class="val-display" id="i_val_visc">0.0000</span></div>
+      <input id="i_visc" type="range" min="0" max="0.02" step="0.0001" value="0.0000">
+    </div>
+    <div class="control-row">
+      <div class="label-row"><span>擾動強度 (Max 20)</span><span class="val-display" id="i_val_force">10.0 m/s²</span></div>
+      <input id="i_force" type="range" min="1" max="20" step="0.5" value="10">
+    </div>
+    <div class="control-row">
+      <div class="label-row"><span>滑鼠影響半徑</span><span class="val-display" id="i_val_radius">0.40 m</span></div>
+      <input id="i_radius" type="range" min="10" max="80" step="1" value="40">
+    </div>
+    <div class="control-row">
+      <div class="label-row"><span>擴散速率</span><span class="val-display" id="i_val_diff">0.001</span></div>
+      <input id="i_diff" type="range" min="0" max="0.01" step="0.001" value="0.001">
+    </div>
+    <button class="action-btn" onclick="resetParticlesManual()">🔄 重製粒子</button>
+  </div>
+</div>
+
+<script>
+const N = 128; const M = 72; const ITER = 8; 
+const PIXELS_PER_METER = 100;
+
+let u, v, u_prev, v_prev, solid;
+let particles = [];
+let MODE = 'tunnel';
+// 用於計算 CFL
+let maxVelocityGrid = 0; 
+let currentSubSteps = 1;
+
+const Params = { dt: 0.1, diff: 0.000, visc: 0.000, force: 10.0, radiusPx: 40, t_speed: 10.0, t_angle: 0 };
+const wing = { x: 0.35, y: 0.5, chord: 0.3, angle: 0 }; 
+
+function IX(x, y) { x = Math.max(0, Math.min(N+1, x)); y = Math.max(0, Math.min(M+1, y)); return x + (N+2) * y; }
+
+function initGrid() {
+  const size = (N+2)*(M+2);
+  u = new Float32Array(size); v = new Float32Array(size);
+  u_prev = new Float32Array(size); v_prev = new Float32Array(size);
+  solid = new Uint8Array(size); 
+}
+function getNacaThickness(x) {
+  if(x<0||x>1) return 0;
+  return 5 * 0.12 * (0.2969*Math.sqrt(x) - 0.1260*x - 0.3516*x*x + 0.2843*x*x*x - 0.1015*x*x*x*x);
+}
+function updateSolid() {
+  solid.fill(0);
+  if (MODE !== 'tunnel') return;
+  const rad = Params.t_angle * Math.PI / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const cx = wing.x * N; const cy = wing.y * M; const chordLen = wing.chord * N;
+  for (let i = 1; i <= N; i++) {
+    for (let j = 1; j <= M; j++) {
+      let dx = i - cx; let dy = j - cy;
+      let lx = dx * cos + dy * sin; let ly = -dx * sin + dy * cos; 
+      let x_frac = (lx + chordLen/2) / chordLen; 
+      if(x_frac >= 0 && x_frac <= 1) {
+        let th = getNacaThickness(x_frac) * chordLen;
+        if(Math.abs(ly) < th) solid[IX(i, j)] = 1;
+      }
+    }
+  }
+}
+
+function set_bnd(b, x) {
+  for (let i = 1; i <= N; i++) {
+    x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+    x[IX(i, M+1)] = b === 2 ? -x[IX(i, M)] : x[IX(i, M)];
+  }
+  for (let j = 1; j <= M; j++) {
+    if(MODE === 'tunnel') {
+      x[IX(0, j)] = x[IX(1, j)]; x[IX(N+1, j)] = x[IX(N, j)];
+    } else {
+      x[IX(0, j)] = b === 1 ? -x[IX(1, j)] : x[IX(1, j)];
+      x[IX(N+1, j)] = b === 1 ? -x[IX(N, j)] : x[IX(N, j)];
+    }
+  }
+  if(MODE === 'tunnel') {
+    for (let i = 1; i <= N; i++) {
+      for (let j = 1; j <= M; j++) {
+        if (solid[IX(i, j)]) x[IX(i, j)] = 0; 
+      }
+    }
+  }
+}
+function lin_solve(b, x, x0, a, c) {
+  const cRecip = 1.0 / c;
+  for (let k = 0; k < ITER; k++) {
+    for (let j = 1; j <= M; j++) {
+      for (let i = 1; i <= N; i++) {
+        if (solid[IX(i,j)]) continue;
+        x[IX(i, j)] = (x0[IX(i, j)] + a * (x[IX(i + 1, j)] + x[IX(i - 1, j)] + x[IX(i, j + 1)] + x[IX(i, j - 1)])) * cRecip;
+      }
+    }
+    set_bnd(b, x);
+  }
+}
+function project(u, v, p, div) {
+  for (let j = 1; j <= M; j++) {
+    for (let i = 1; i <= N; i++) {
+      div[IX(i, j)] = -0.5 * (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] - v[IX(i, j - 1)]) / N;
+      p[IX(i, j)] = 0;
+    }
+  }
+  set_bnd(0, div); set_bnd(0, p);
+  lin_solve(0, p, div, 1, 4);
+  for (let j = 1; j <= M; j++) {
+    for (let i = 1; i <= N; i++) {
+      if(solid[IX(i,j)]) continue;
+      u[IX(i, j)] -= 0.5 * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) * N;
+      v[IX(i, j)] -= 0.5 * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) * N;
+    }
+  }
+  set_bnd(1, u); set_bnd(2, v);
+}
+function advect(b, d, d0, u, v, dt) {
+  let i0, j0, i1, j1; let x, y, s0, t0, s1, t1; const dt0 = dt * N;
+  for (let j = 1; j <= M; j++) {
+    for (let i = 1; i <= N; i++) {
+      if(solid[IX(i,j)]) continue;
+      x = i - dt0 * u[IX(i, j)] / N; 
+      y = j - dt0 * v[IX(i, j)] / M; 
+      x = i - dt * u[IX(i, j)] * (N/10); 
+      y = j - dt * v[IX(i, j)] * (M/10);
+      if (x < 0.5) x = 0.5; if (x > N + 0.5) x = N + 0.5;
+      if (y < 0.5) y = 0.5; if (y > M + 0.5) y = M + 0.5;
+      i0 = Math.floor(x); i1 = i0 + 1; j0 = Math.floor(y); j1 = j0 + 1;
+      s1 = x - i0; s0 = 1 - s1; t1 = y - j0; t0 = 1 - t1;
+      d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) + s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+    }
+  }
+  set_bnd(b, d);
+}
+
+// 單次物理步 (Atomic Step)
+function fluidStepAtomic(dt) {
+  const visc = Params.visc;
+  if(visc > 0) {
+    lin_solve(1, u_prev, u, visc*dt*N*M, 1+4*visc*dt*N*M);
+    lin_solve(2, v_prev, v, visc*dt*N*M, 1+4*visc*dt*N*M);
+    u.set(u_prev); v.set(v_prev);
+  }
+  project(u, v, u_prev, v_prev);
+  advect(1, u_prev, u, u, v, dt);
+  advect(2, v_prev, v, u, v, dt);
+  u.set(u_prev); v.set(v_prev);
+  project(u, v, u_prev, v_prev);
+  if(MODE === 'tunnel') {
+    for(let j=1; j<M; j++) {
+       const jitter = Math.sin(j*0.5 + performance.now()*0.01) * 0.5;
+       u[IX(1, j)] = Params.t_speed * 0.5 + jitter * 0.1;
+       v[IX(1, j)] = 0;
+    }
+  }
+}
+
+// 自適應主循環
+function fluidStepAdaptive() {
+  // 1. 估算當前最大 CFL
+  let maxV = 0;
+  for(let i=0; i<u.length; i++) {
+    let val = Math.abs(u[i]) + Math.abs(v[i]); 
+    if(val > maxV) maxV = val;
+  }
+  
+  let cflEstimate = maxV * Params.dt * 1.5; 
+  
+  // 2. 決定子步長數量
+  let subSteps = 1;
+  if (cflEstimate > 1.5) subSteps = Math.ceil(cflEstimate / 1.5);
+  if (subSteps > 5) subSteps = 5; // 強制上限
+
+  currentSubSteps = subSteps;
+  
+  // 3. 執行物理
+  let subDt = Params.dt / subSteps;
+  for(let k=0; k<subSteps; k++) {
+    fluidStepAtomic(subDt);
+  }
+  
+  // 4. 更新驗證數據 UI (僅更新 CFL)
+  calcValidationStats(cflEstimate);
+}
+
+function calcValidationStats(cfl) {
+  // CFL UI
+  let cflDisplay = cfl / currentSubSteps; // 實際每一步的有效 CFL
+  updateStatUI('cfl', cflDisplay, 2.0, 5.0, true); // true = lower is better
+
+  // 更新子步長 Badge
+  const badge = document.getElementById('badge_substep');
+  badge.innerText = currentSubSteps + "x Step";
+  badge.className = currentSubSteps > 1 ? "substep-badge substep-active" : "substep-badge";
+}
+
+function updateStatUI(id, val, threshGood, threshBad, lowerBetter) {
+  const elText = document.getElementById('val_' + id);
+  const elBar = document.getElementById('bar_' + id);
+  
+  let status = 'ok';
+  if (lowerBetter) {
+      if (val > threshBad) status = 'err';
+      else if (val > threshGood) status = 'warn';
+  } else {
+      if (val < threshBad) status = 'err';
+      else if (val < threshGood) status = 'warn';
+  }
+  
+  elText.innerText = (lowerBetter ? val.toFixed(2) : val.toFixed(1) + '%');
+  elText.className = 'stat-val ' + status;
+  
+  let percent = lowerBetter ? (val / 3.0 * 100) : val; 
+  elBar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+  elBar.className = 'stat-bar-fill bar-' + status;
+}
+
+class Particle {
+  constructor() { this.reset(true); } 
+  reset(initial = false) {
+    if(MODE === 'tunnel') {
+      if(initial) this.x = Math.random() * N; else this.x = -Math.random() * 20; 
+      this.y = Math.random() * M; this.age = 0;
+    } else {
+      this.x = Math.random() * N; this.y = Math.random() * M; this.age = Math.random() * 1000;
+    }
+    this.x += (Math.random()-0.5)*0.5; this.y += (Math.random()-0.5)*0.5;
+  }
+  update() {
+    let x = this.x; let y = this.y;
+    if(x < 1) x = 1; if(x > N) x = N; if(y < 1) y = 1; if(y > M) y = M;
+    let i0 = Math.floor(x), i1 = i0 + 1; let j0 = Math.floor(y), j1 = j0 + 1;
+    let s1 = x - i0, s0 = 1 - s1; let t1 = y - j0, t0 = 1 - t1;
+    let vx = s0*(t0*u[IX(i0,j0)]+t1*u[IX(i0,j1)]) + s1*(t0*u[IX(i1,j0)]+t1*u[IX(i1,j1)]);
+    let vy = s0*(t0*v[IX(i0,j0)]+t1*v[IX(i0,j1)]) + s1*(t0*v[IX(i1,j0)]+t1*v[IX(i1,j1)]);
+    this.x += vx * 3.0; this.y += vy * 3.0; this.age++;
+    if(MODE === 'tunnel') {
+      if(this.x > N + 5 || this.y < -5 || this.y > M + 5 || this.age > 400) this.reset();
+      if(solid[IX(Math.round(this.x), Math.round(this.y))]) this.y += (this.y > M*0.5 ? 1 : -1); 
+    } else {
+      if(this.x > N) this.x = 1; if(this.x < 0) this.x = N; if(this.y > M) this.y = 1; if(this.y < 0) this.y = M;
+    }
+  }
+  draw(ctx, cellW, cellH) {
+    if (this.x < 0) return;
+    const px = this.x * cellW; const py = this.y * cellH;
+    const speed = Math.sqrt(u[IX(Math.floor(this.x), Math.floor(this.y))]**2 + v[IX(Math.floor(this.x), Math.floor(this.y))]**2);
+    ctx.fillStyle = MODE === 'tunnel' ? `hsl(${180 + speed*150}, 100%, 70%)` : `rgba(200, 220, 255, 0.6)`;
+    ctx.fillRect(px, py, 2.5, 2.5);
+  }
+}
+
+const canvas = document.getElementById('c'); const ctx = canvas.getContext('2d');
+let W, H; let mouse = {x:0, y:0, down:false, lastX:0, lastY:0};
+function init() { resize(); initGrid(); updateSolid(); updateParams(); resetParticlesManual(); }
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+function updateParams() {
+  Params.t_speed = parseFloat(document.getElementById('t_speed').value);
+  Params.t_angle = parseFloat(document.getElementById('t_angle').value);
+  let count = parseInt(document.getElementById('i_count').value);
+  Params.visc = parseFloat(document.getElementById('i_visc').value);
+  Params.force = parseFloat(document.getElementById('i_force').value);
+  Params.radiusPx = parseInt(document.getElementById('i_radius').value); 
+  Params.diff = parseFloat(document.getElementById('i_diff').value);
+  document.getElementById('t_val_speed').innerText = Params.t_speed.toFixed(1) + " m/s";
+  document.getElementById('t_val_angle').innerText = Params.t_angle + "°";
+  document.getElementById('i_val_count').innerText = count;
+  document.getElementById('i_val_visc').innerText = Params.visc.toFixed(4);
+  document.getElementById('i_val_force').innerText = Params.force.toFixed(1) + " m/s²";
+  document.getElementById('i_val_radius').innerText = (Params.radiusPx / PIXELS_PER_METER).toFixed(2) + " m";
+  document.getElementById('i_val_diff').innerText = Params.diff.toFixed(3);
+  if(particles.length < count) while(particles.length < count) particles.push(new Particle()); else particles.length = count;
+  updateSolid();
+}
+function resetParticlesManual() { particles.forEach(p => p.reset(true)); }
+document.querySelectorAll('input').forEach(e => e.addEventListener('input', updateParams));
+function switchMode(m) {
+  MODE = m;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.mode-btn[onclick="switchMode('${m}')"]`).classList.add('active');
+  document.querySelectorAll('.ui-panel').forEach(p => p.classList.remove('show'));
+  document.getElementById(`ui-${m}`).classList.add('show');
+  u.fill(0); v.fill(0); u_prev.fill(0); v_prev.fill(0);
+  updateSolid(); resetParticlesManual();
+}
+function drawSmoothWing() {
+  if(MODE !== 'tunnel') return;
+  const steps = 100; const cx = wing.x * W; const cy = wing.y * H; const chordPx = wing.chord * W; const rad = Params.t_angle * Math.PI / 180;
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(rad); ctx.beginPath();
+  for(let i=0; i<=steps; i++){ const t = i/steps; const x = (t - 0.5) * chordPx; const y = -getNacaThickness(t) * chordPx; if(i===0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+  for(let i=steps; i>=0; i--){ const t = i/steps; const x = (t - 0.5) * chordPx; const y = getNacaThickness(t) * chordPx; ctx.lineTo(x, y); }
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(-chordPx/2, -20, chordPx/2, 20); grad.addColorStop(0, '#444'); grad.addColorStop(0.5, '#777'); grad.addColorStop(1, '#444');
+  ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+}
+function loop() {
+  if(mouse.down && MODE === 'interact') {
+    let gridMouseX = (mouse.x / W) * N; let gridMouseY = (mouse.y / H) * M;
+    let dx = (mouse.x - mouse.lastX); let dy = (mouse.y - mouse.lastY);
+    dx = Math.max(-10, Math.min(10, dx)); dy = Math.max(-10, Math.min(10, dy));
+    let cellW = W / N; let gridRadius = Params.radiusPx / cellW; let rSq = Params.radiusPx * Params.radiusPx;
+    let startI = Math.floor(gridMouseX - gridRadius); let endI = Math.ceil(gridMouseX + gridRadius);
+    let startJ = Math.floor(gridMouseY - gridRadius); let endJ = Math.ceil(gridMouseY + gridRadius);
+    for(let i = startI; i <= endI; i++) {
+      for(let j = startJ; j <= endJ; j++) {
+         if(i > 0 && i < N && j > 0 && j < M) {
+             let cpx = i * cellW; let cpy = j * (H/M); 
+             let distSq = (cpx - mouse.x)**2 + (cpy - mouse.y)**2;
+             if(distSq <= rSq) { u[IX(i, j)] += dx * Params.force * 0.1; v[IX(i, j)] += dy * Params.force * 0.1; }
+         }
+      }
+    }
+  }
+  mouse.lastX = mouse.x; mouse.lastY = mouse.y;
+
+  fluidStepAdaptive();
+
+  ctx.fillStyle = '#050505'; ctx.fillRect(0, 0, W, H);
+  let cellW = W / N; let cellH = H / M;
+  for(let p of particles) { p.update(); p.draw(ctx, cellW, cellH); }
+  drawSmoothWing();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+window.addEventListener('mousedown', e => { mouse.down = true; mouse.lastX = e.clientX; mouse.lastY = e.clientY; });
+window.addEventListener('mouseup', e => mouse.down = false);
+window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+init(); loop();
+</script>
+</body>
+</html>
